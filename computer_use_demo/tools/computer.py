@@ -9,8 +9,10 @@ if platform.system() == "Darwin":
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal, TypedDict
+from dataclasses import dataclass
 from uuid import uuid4
 from screeninfo import get_monitors
+import adbutils
 
 from PIL import ImageGrab, Image
 from functools import partial
@@ -39,9 +41,34 @@ Action = Literal[
 ]
 
 
-class Resolution(TypedDict):
+@dataclass
+class Resolution():
     width: int
     height: int
+
+
+
+class ScreenType(StrEnum):
+    MONITOR = "monitor"
+    ADB = "adb"
+
+@dataclass
+class Screen():
+    index: int
+    name: str
+    type_: ScreenType
+    size: Resolution
+    layout: str
+    position: str
+
+    def __str__(self) -> str:
+        match self.type_:
+            case ScreenType.MONITOR:
+                return f"Monitor {self.index}: {self.size.width}x{self.size.height}, {self.layout}, {self.position}"
+            case ScreenType.ADB:
+                return f"ADB Device {self.name}: {self.size.width}x{self.size.height}"
+            case _:
+                raise RuntimeError("unreachable")
 
 
 MAX_SCALING_TARGETS: dict[str, Resolution] = {
@@ -88,7 +115,29 @@ def get_screen_details():
             primary_index = i
         else:
             position = "Secondary"
-        screen_info = f"Screen {i + 1}: {screen.width}x{screen.height}, {layout}, {position}"
+        screen_info = Screen(
+            type_=ScreenType.MONITOR,
+            index=i,
+            name=None,
+            size=Resolution(width=screen.width, height=screen.height),
+            layout=layout,
+            position=position
+        )
+        screen_details.append(screen_info)
+
+    # Add Android Emulator screens via ADB if available
+    adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
+    for device in adb.device_list():
+        device_name = device.info['serialno']
+        (width, height) = device.window_size()
+        screen_info = Screen(
+            type_=ScreenType.ADB,
+            index=0,
+            name=device_name,
+            size=Resolution(width=width, height=height),
+            layout=None,
+            position=None,
+        )
         screen_details.append(screen_info)
 
     return screen_details, primary_index
@@ -109,6 +158,9 @@ class ComputerTool(BaseAnthropicTool):
     _screenshot_delay = 2.0
     _scaling_enabled = True
 
+    _adb_device = None
+    _adb_mouse = (0, 0)
+
     @property
     def options(self) -> ComputerToolOptions:
         width, height = self.scale_coordinates(
@@ -123,15 +175,28 @@ class ComputerTool(BaseAnthropicTool):
     def to_params(self) -> BetaToolComputerUse20241022Param:
         return {"name": self.name, "type": self.api_type, **self.options}
 
-    def __init__(self, selected_screen: int = 0):
+    def __init__(self, selected_screen: Screen = None):
         super().__init__()
 
         # Get screen width and height using Windows command
         self.display_num = None
         self.offset_x = 0
         self.offset_y = 0
-        self.selected_screen = selected_screen   
-        self.width, self.height = self.get_screen_size()     
+        self.selected_screen = selected_screen
+        resolution = self.selected_screen.size 
+        self.width, self.height = resolution.width, resolution.height
+
+        if selected_screen.type_ == ScreenType.ADB:
+            adb = adbutils.AdbClient(host="127.0.0.1", port=5037)
+            devices = adb.device_list()
+            if not devices:
+                raise RuntimeError("No Android devices found via ADB")
+            
+            device_name = selected_screen.name
+            self._adb_device = next((d for d in devices if d.info['serialno'] == device_name), None)
+            if self._adb_device is None:
+                raise RuntimeError(f"No Android device found with serial number {device_name}")
+            
 
         # Path to cliclick
         self.cliclick = "cliclick"
@@ -163,11 +228,19 @@ class ComputerTool(BaseAnthropicTool):
             y += self.offset_y
 
             if action == "mouse_move":
-                pyautogui.moveTo(x, y)
+                if self._adb_device is not None:
+                    self._adb_mouse = (x, y)
+                else:
+                    pyautogui.moveTo(x, y)
                 return ToolResult(output=f"Moved mouse to ({x}, {y})")
             elif action == "left_click_drag":
-                current_x, current_y = pyautogui.position()
-                pyautogui.dragTo(x, y, duration=0.5)  # Adjust duration as needed
+                if self._adb_device is not None:
+                    start_x, start_y = self._adb_mouse
+                    self._adb_device.swipe(start_x, start_y, x, y, 0.5)
+                    self._adb_mouse = (x, y)  # Update mouse position
+                else:
+                    current_x, current_y = pyautogui.position()
+                    pyautogui.dragTo(x, y, duration=0.5)  # Adjust duration as needed
                 return ToolResult(output=f"Dragged mouse from ({current_x}, {current_y}) to ({x}, {y})")
 
         if action in ("key", "type"):
@@ -181,18 +254,30 @@ class ComputerTool(BaseAnthropicTool):
             if action == "key":
                 # Handle key combinations
                 keys = text.split('+')
-                for key in keys:
-                    key = self.key_conversion.get(key.strip(), key.strip())
-                    key = key.lower()
-                    pyautogui.keyDown(key)  # Press down each key
-                for key in reversed(keys):
-                    key = self.key_conversion.get(key.strip(), key.strip())
-                    key = key.lower()
-                    pyautogui.keyUp(key)    # Release each key in reverse order
+                if self._adb_device is not None:
+                    # For ADB, send key events for each key
+                    for key in keys:
+                        key = key.lower()
+                        self._adb_device.shell(f"input keyevent {' '.join(keys)}")
+                else:
+                    # For desktop, press and release keys in sequence
+                    for key in keys:
+                        key = self.key_conversion.get(key.strip(), key.strip())
+                        key = key.lower()
+                        pyautogui.keyDown(key)  # Press down each key
+                    for key in reversed(keys):
+                        key = self.key_conversion.get(key.strip(), key.strip())
+                        key = key.lower()
+                        pyautogui.keyUp(key)    # Release each key in reverse order
                 return ToolResult(output=f"Pressed keys: {text}")
             
             elif action == "type":
-                pyautogui.typewrite(text, interval=TYPING_DELAY_MS / 1000)  # Convert ms to seconds
+                if self._adb_device is not None:
+                    # For ADB, send text input directly
+                    self._adb_device.send_keys(text)
+                else:
+                    # For desktop, use pyautogui typing
+                    pyautogui.typewrite(text, interval=TYPING_DELAY_MS / 1000)  # Convert ms to seconds
                 screenshot_base64 = (await self.screenshot()).base64_image
                 return ToolResult(output=text, base64_image=screenshot_base64)
 
@@ -212,18 +297,25 @@ class ComputerTool(BaseAnthropicTool):
             if action == "screenshot":
                 return await self.screenshot()
             elif action == "cursor_position":
-                x, y = pyautogui.position()
+                if self._adb_device is not None:
+                    x, y = self._adb_mouse
+                else:
+                    x, y = pyautogui.position()
                 x, y = self.scale_coordinates(ScalingSource.COMPUTER, x, y)
                 return ToolResult(output=f"X={x},Y={y}")
             else:
                 if action == "left_click":
-                    pyautogui.click()
+                    if self._adb_device is not None:
+                        x, y = self._adb_mouse
+                        self._adb_device.shell(f"input tap {x} {y}")
+                    else:
+                        pyautogui.click()
                 elif action == "right_click":
-                    pyautogui.rightClick()
+                    raise ToolError("right_click not supported for ADB devices")
                 elif action == "middle_click":
-                    pyautogui.middleClick()
+                    raise ToolError("middle_click not supported for ADB devices") 
                 elif action == "double_click":
-                    pyautogui.doubleClick()
+                    raise ToolError("double_click not supported for ADB devices")
                 return ToolResult(output=f"Performed {action}")
         raise ToolError(f"Invalid action: {action}")
 
@@ -233,6 +325,19 @@ class ComputerTool(BaseAnthropicTool):
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"screenshot_{uuid4().hex}.png"
 
+        if self.selected_screen.type_ == ScreenType.ADB:
+            self.screenshot_from_adb(path, self.selected_screen.name)
+        else:
+            self.screenshot_from_monitor(path)
+
+
+        if path.exists():
+            # Return a ToolResult instance instead of a dictionary
+            return ToolResult(base64_image=base64.b64encode(path.read_bytes()).decode())
+        
+        raise ToolError(f"Failed to take screenshot: {path} does not exist.")
+    
+    def screenshot_from_monitor(self, path):
         ImageGrab.grab = partial(ImageGrab.grab, all_screens=True)
 
         # Detect platform
@@ -245,10 +350,10 @@ class ComputerTool(BaseAnthropicTool):
             # Sort screens by x position to arrange from left to right
             sorted_screens = sorted(screens, key=lambda s: s.x)
 
-            if self.selected_screen < 0 or self.selected_screen >= len(screens):
+            if self.selected_screen.index < 0 or self.selected_screen.index >= len(screens):
                 raise IndexError("Invalid screen index.")
 
-            screen = sorted_screens[self.selected_screen]
+            screen = sorted_screens[self.selected_screen.index]
             bbox = (screen.x, screen.y, screen.x + screen.width, screen.y + screen.height)
 
         elif system == "Darwin":  # macOS
@@ -272,10 +377,10 @@ class ComputerTool(BaseAnthropicTool):
             # Sort screens by x position to arrange from left to right
             sorted_screens = sorted(screens, key=lambda s: s['x'])
 
-            if self.selected_screen < 0 or self.selected_screen >= len(screens):
+            if self.selected_screen.index < 0 or self.selected_screen.index >= len(screens):
                 raise IndexError("Invalid screen index.")
 
-            screen = sorted_screens[self.selected_screen]
+            screen = sorted_screens[self.selected_screen.index]
             bbox = (screen['x'], screen['y'], screen['x'] + screen['width'], screen['y'] + screen['height'])
 
         else:  # Linux or other OS
@@ -302,17 +407,15 @@ class ComputerTool(BaseAnthropicTool):
         # Resize if target_dimensions are specified
         print(f"offset is {self.offset_x}, {self.offset_y}")
         print(f"target_dimension is {self.target_dimension}")
-        screenshot = screenshot.resize((self.target_dimension["width"], self.target_dimension["height"]))
-
+        screenshot = screenshot.resize((self.target_dimension.width, self.target_dimension.height))
 
         # Save the screenshot
         screenshot.save(str(path))
 
-        if path.exists():
-            # Return a ToolResult instance instead of a dictionary
-            return ToolResult(base64_image=base64.b64encode(path.read_bytes()).decode())
-        
-        raise ToolError(f"Failed to take screenshot: {path} does not exist.")
+
+    def screenshot_from_adb(self, path, device_name):
+        self._adb_device.screenshot().save(str(path))
+
 
     def padding_image(self, screenshot):
         """Pad the screenshot to 16:10 aspect ratio, when the aspect ratio is not 16:10."""
@@ -345,8 +448,8 @@ class ComputerTool(BaseAnthropicTool):
 
         for target_name, dimension in MAX_SCALING_TARGETS.items():
             # allow some error in the aspect ratio - not ratios are exactly 16:9
-            if abs(dimension["width"] / dimension["height"] - ratio) < 0.02:
-                if dimension["width"] < self.width:
+            if abs(dimension.width / dimension.height - ratio) < 0.02:
+                if dimension.width < self.width:
                     target_dimension = dimension
                     self.target_dimension = target_dimension
                     # print(f"target_dimension: {target_dimension}")
@@ -358,8 +461,8 @@ class ComputerTool(BaseAnthropicTool):
             self.target_dimension = MAX_SCALING_TARGETS["WXGA"]
 
         # should be less than 1
-        x_scaling_factor = target_dimension["width"] / self.width
-        y_scaling_factor = target_dimension["height"] / self.height
+        x_scaling_factor = target_dimension.width / self.width
+        y_scaling_factor = target_dimension.height / self.height
         if source == ScalingSource.API:
             if x > self.width or y > self.height:
                 raise ToolError(f"Coordinates {x}, {y} are out of bounds")
@@ -367,68 +470,6 @@ class ComputerTool(BaseAnthropicTool):
             return round(x / x_scaling_factor), round(y / y_scaling_factor)
         # scale down
         return round(x * x_scaling_factor), round(y * y_scaling_factor)
-
-    def get_screen_size(self):
-        if platform.system() == "Windows":
-            # Use screeninfo to get primary monitor on Windows
-            screens = get_monitors()
-
-            # Sort screens by x position to arrange from left to right
-            sorted_screens = sorted(screens, key=lambda s: s.x)
-            
-            if self.selected_screen is None:
-                primary_monitor = next((m for m in get_monitors() if m.is_primary), None)
-                return primary_monitor.width, primary_monitor.height
-            elif self.selected_screen < 0 or self.selected_screen >= len(screens):
-                raise IndexError("Invalid screen index.")
-            else:
-                screen = sorted_screens[self.selected_screen]
-                return screen.width, screen.height
-
-        elif platform.system() == "Darwin":
-            # macOS part using Quartz to get screen information
-            max_displays = 32  # Maximum number of displays to handle
-            active_displays = Quartz.CGGetActiveDisplayList(max_displays, None, None)[1]
-
-            # Get the display bounds (resolution) for each active display
-            screens = []
-            for display_id in active_displays:
-                bounds = Quartz.CGDisplayBounds(display_id)
-                screens.append({
-                    'id': display_id,
-                    'x': int(bounds.origin.x),
-                    'y': int(bounds.origin.y),
-                    'width': int(bounds.size.width),
-                    'height': int(bounds.size.height),
-                    'is_primary': Quartz.CGDisplayIsMain(display_id)  # Check if this is the primary display
-                })
-
-            # Sort screens by x position to arrange from left to right
-            sorted_screens = sorted(screens, key=lambda s: s['x'])
-
-            if self.selected_screen is None:
-                # Find the primary monitor
-                primary_monitor = next((screen for screen in screens if screen['is_primary']), None)
-                if primary_monitor:
-                    return primary_monitor['width'], primary_monitor['height']
-                else:
-                    raise RuntimeError("No primary monitor found.")
-            elif self.selected_screen < 0 or self.selected_screen >= len(screens):
-                raise IndexError("Invalid screen index.")
-            else:
-                # Return the resolution of the selected screen
-                screen = sorted_screens[self.selected_screen]
-                return screen['width'], screen['height']
-
-        else:  # Linux or other OS
-            cmd = "xrandr | grep ' primary' | awk '{print $4}'"
-            try:
-                output = subprocess.check_output(cmd, shell=True).decode()
-                resolution = output.strip().split()[0]
-                width, height = map(int, resolution.split('x'))
-                return width, height
-            except subprocess.CalledProcessError:
-                raise RuntimeError("Failed to get screen resolution on Linux.")
     
     def get_mouse_position(self):
         # TODO: enhance this func

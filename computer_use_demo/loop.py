@@ -24,7 +24,7 @@ from anthropic.types.beta import (
 from anthropic.types import TextBlock
 from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock
 
-from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
+from .tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult, Screen
 
 from PIL import Image
 from io import BytesIO
@@ -182,7 +182,7 @@ def sampling_loop_sync(
     api_key: str,
     only_n_most_recent_images: int | None = None,
     max_tokens: int = 4096,
-    selected_screen: int = 0
+    selected_screen: Screen = None,
 ):
     """
     Synchronous agentic sampling loop for the assistant/tool interaction of computer use.

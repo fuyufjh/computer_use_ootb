@@ -24,7 +24,7 @@ from anthropic.types.beta import (
 from anthropic.types import TextBlock
 from anthropic.types.beta import BetaMessage, BetaTextBlock, BetaToolUseBlock
 
-from ...tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult
+from ...tools import BashTool, ComputerTool, EditTool, ToolCollection, ToolResult, Screen
 
 from PIL import Image
 from io import BytesIO
@@ -67,7 +67,7 @@ class AnthropicActor:
         api_response_callback: Callable[[APIResponse[BetaMessage]], None],
         max_tokens: int = 4096,
         only_n_most_recent_images: int | None = None,
-        selected_screen: int = 0,
+        selected_screen: Screen = None,
     ):
         self.model = model
         self.provider = provider

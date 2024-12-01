@@ -10,3 +10,4 @@ boto3>=1.28.57
 google-auth<3,>=2
 gradio
 screeninfo
+adbutils

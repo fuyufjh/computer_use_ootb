@@ -39,8 +39,8 @@ API_KEY_FILE = CONFIG_DIR / "api_key"
 
 WARNING_TEXT = "⚠️ Security Alert: Never provide access to sensitive accounts or data, as malicious web content can hijack Claude's behavior"
 
-SELECTED_SCREEN_INDEX = None
-SCREEN_NAMES = None
+SELECTED_SCREEN = None
+SCREENS = None
 
 class Sender(StrEnum):
     USER = "user"
@@ -195,9 +195,9 @@ def accumulate_messages(*args, **kwargs):
     Wrapper function to accumulate messages from sampling_loop_sync.
     """
     accumulated_messages = []
-    global SELECTED_SCREEN_INDEX    
-    print(f"Selected screen: {SELECTED_SCREEN_INDEX}")
-    for message in sampling_loop_sync(*args, selected_screen=SELECTED_SCREEN_INDEX, **kwargs):
+    global SELECTED_SCREEN 
+    print(f"Selected screen: {SELECTED_SCREEN}")
+    for message in sampling_loop_sync(*args, selected_screen=SELECTED_SCREEN, **kwargs):
         # Check if the message is already in the accumulated messages
         if message not in accumulated_messages:
             accumulated_messages.append(message)
@@ -259,8 +259,9 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
                     interactive=True,
                 )
             with gr.Column():
-                screen_options, primary_index = get_screen_details()
-                SCREEN_NAMES = screen_options
+                screens, primary_index = get_screen_details()
+                SCREENS = screens
+                screen_options = [str(screen) for screen in screens]
                 SELECTED_SCREEN_INDEX = primary_index
                 screen_selector = gr.Dropdown(
                     label="Select Screen",
@@ -298,10 +299,10 @@ with gr.Blocks(theme=gr.themes.Soft()) as demo:
     
     # Function to update the global variable when the dropdown changes
     def update_selected_screen(selected_screen_name):
-        global SCREEN_NAMES
-        global SELECTED_SCREEN_INDEX
-        SELECTED_SCREEN_INDEX = SCREEN_NAMES.index(selected_screen_name)
-        print(f"Selected screen updated to: {SELECTED_SCREEN_INDEX}")
+        global SCREENS
+        global SELECTED_SCREEN
+        SELECTED_SCREEN = next(s for s in SCREENS if str(s) == selected_screen_name)
+        print(f"Selected screen updated to: {SELECTED_SCREEN}")
 
     with gr.Accordion("Quick Start Prompt", open=False):  # open=False 表示默认收
         # Initialize Gradio interface with the dropdowns

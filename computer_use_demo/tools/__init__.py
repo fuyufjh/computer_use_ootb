@@ -1,7 +1,7 @@
 from .base import CLIResult, ToolResult
 from .bash import BashTool
 from .collection import ToolCollection
-from .computer import ComputerTool
+from .computer import ComputerTool, Screen
 from .edit import EditTool
 
 __ALL__ = [
