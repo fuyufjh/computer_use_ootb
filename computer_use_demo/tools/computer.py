@@ -8,7 +8,7 @@ if platform.system() == "Darwin":
     import Quartz  # uncomment this line if you are on macOS
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Literal, Tuple
 from dataclasses import dataclass
 from uuid import uuid4
 from screeninfo import get_monitors
@@ -83,7 +83,8 @@ class ScalingSource(StrEnum):
     API = "api"
 
 
-class ComputerToolOptions(TypedDict):
+@dataclass
+class ComputerToolOptions():
     display_height_px: int
     display_width_px: int
     display_number: int | None
@@ -93,7 +94,7 @@ def chunks(s: str, chunk_size: int) -> list[str]:
     return [s[i : i + chunk_size] for i in range(0, len(s), chunk_size)]
 
 
-def get_screen_details():
+def get_screen_details() -> Tuple[list[Screen], int]:
     screens = get_monitors()
     screen_details = []
 
@@ -166,11 +167,11 @@ class ComputerTool(BaseAnthropicTool):
         width, height = self.scale_coordinates(
             ScalingSource.COMPUTER, self.width, self.height
         )
-        return {
-            "display_width_px": width,
-            "display_height_px": height,
-            "display_number": self.display_num,
-        }
+        return ComputerToolOptions(
+            display_width_px=width,
+            display_height_px=height,
+            display_number=self.display_num,
+        )
 
     def to_params(self) -> BetaToolComputerUse20241022Param:
         return {"name": self.name, "type": self.api_type, **self.options}
